@@ -49,6 +49,8 @@ pub enum BuildError {
     DuplicateEntry(PathBuf),
     #[error("Failed to set permissions on '{0}': {1}")]
     FailedToSetPermissions(PathBuf, std::io::Error),
+    #[error("Failed to create a symlink to '{0}': {1}")]
+    FailedToCreateSymLink(PathBuf, std::io::Error),
 }
 
 /// A temporary directory builder that contains a list of entries to be created.
@@ -266,6 +268,14 @@ fn create_entry(entry_path: &Path, kind: &Kind) -> Result<(), BuildError> {
         Kind::FileToCopy(source_path) => {
             std::fs::copy(source_path, entry_path)
                 .map_err(|err| BuildError::FailedToCopyFile(source_path.clone(), err))?;
+        }
+        #[cfg(unix)]
+        Kind::SymLink {
+            kind: SymLinkKind::Unix,
+            original,
+        } => {
+            std::os::unix::fs::symlink(original, &entry_path)
+                .map_err(|err| BuildError::FailedToCreateSymLink(original.clone(), err))?;
         }
     }
 
@@ -547,6 +557,16 @@ enum Kind {
     TextFile(String),
     BinaryFile(Vec<u8>),
     FileToCopy(PathBuf),
+    SymLink {
+        kind: SymLinkKind,
+        original: std::path::PathBuf,
+    },
+}
+
+#[derive(Debug)]
+enum SymLinkKind {
+    #[cfg(unix)]
+    Unix,
 }
 
 /// Represents an entry, file or directory, to be created.
@@ -561,6 +581,37 @@ struct Entry {
     /// The Unix permission bits to apply to the entry.
     #[cfg(unix)]
     mode: Option<u32>,
+}
+
+#[cfg(unix)]
+pub mod unix {
+    use std::path::Path;
+
+    use crate::{EntryBuilder, Kind, TempDirectoryBuilder};
+
+    pub trait TempDirectoryBuilderExt {
+        #[must_use]
+        fn add_symlink(self, path: impl AsRef<Path>, original: impl AsRef<Path>) -> EntryBuilder;
+    }
+
+    impl TempDirectoryBuilderExt for TempDirectoryBuilder {
+        /// Adds a symlink
+        fn add_symlink(self, path: impl AsRef<Path>, original: impl AsRef<Path>) -> EntryBuilder {
+            self.add(
+                path,
+                Kind::SymLink {
+                    kind: crate::SymLinkKind::Unix,
+                    original: original.as_ref().to_path_buf(),
+                },
+            )
+        }
+    }
+
+    impl TempDirectoryBuilderExt for EntryBuilder {
+        fn add_symlink(self, path: impl AsRef<Path>, original: impl AsRef<Path>) -> EntryBuilder {
+            self.builder.add_symlink(path, original)
+        }
+    }
 }
 
 #[cfg(test)]
@@ -649,6 +700,29 @@ mod tests {
         let entry_path = temp_dir.path().join(entry_name);
 
         assert!(entry_path.exists());
+        assert!(entry_path.is_file());
+
+        let entry_content = std::fs::read_to_string(entry_path).unwrap();
+        let source_content = std::fs::read_to_string(source_file_path).unwrap();
+
+        assert_eq!(entry_content, source_content);
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn test_add_unix_symlink() {
+        use crate::unix::TempDirectoryBuilderExt;
+
+        let entry_name = "test.rs";
+        let source_file_path = Path::new(file!()).canonicalize().unwrap();
+        let temp_dir = TempDirectoryBuilder::default()
+            .add_symlink(entry_name, &source_file_path)
+            .build()
+            .unwrap();
+        let entry_path = temp_dir.path().join(entry_name);
+
+        assert!(entry_path.exists());
+        assert!(entry_path.is_symlink());
         assert!(entry_path.is_file());
 
         let entry_content = std::fs::read_to_string(entry_path).unwrap();
