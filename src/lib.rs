@@ -591,14 +591,14 @@ pub mod unix {
 
     pub trait TempDirectoryBuilderExt {
         #[must_use]
-        fn add_symlink(self, path: impl AsRef<Path>, original: impl AsRef<Path>) -> EntryBuilder;
+        fn add_symlink(self, original: impl AsRef<Path>, link: impl AsRef<Path>) -> EntryBuilder;
     }
 
     impl TempDirectoryBuilderExt for TempDirectoryBuilder {
         /// Adds a symlink
-        fn add_symlink(self, path: impl AsRef<Path>, original: impl AsRef<Path>) -> EntryBuilder {
+        fn add_symlink(self, original: impl AsRef<Path>, link: impl AsRef<Path>) -> EntryBuilder {
             self.add(
-                path,
+                link,
                 Kind::SymLink {
                     kind: crate::SymLinkKind::Unix,
                     original: original.as_ref().to_path_buf(),
@@ -608,8 +608,8 @@ pub mod unix {
     }
 
     impl TempDirectoryBuilderExt for EntryBuilder {
-        fn add_symlink(self, path: impl AsRef<Path>, original: impl AsRef<Path>) -> EntryBuilder {
-            self.builder.add_symlink(path, original)
+        fn add_symlink(self, original: impl AsRef<Path>, link: impl AsRef<Path>) -> EntryBuilder {
+            self.builder.add_symlink(original, link)
         }
     }
 }
@@ -716,7 +716,7 @@ mod tests {
         let entry_name = "test.rs";
         let source_file_path = Path::new(file!()).canonicalize().unwrap();
         let temp_dir = TempDirectoryBuilder::default()
-            .add_symlink(entry_name, &source_file_path)
+            .add_symlink(&source_file_path, entry_name)
             .build()
             .unwrap();
         let entry_path = temp_dir.path().join(entry_name);
