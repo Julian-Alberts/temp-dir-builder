@@ -274,7 +274,23 @@ fn create_entry(entry_path: &Path, kind: &Kind) -> Result<(), BuildError> {
             kind: SymLinkKind::Unix,
             original,
         } => {
-            std::os::unix::fs::symlink(original, &entry_path)
+            std::os::unix::fs::symlink(original, entry_path)
+                .map_err(|err| BuildError::FailedToCreateSymLink(original.clone(), err))?;
+        }
+        #[cfg(windows)]
+        Kind::SymLink {
+            kind: SymLinkKind::Dir,
+            original,
+        } => {
+            std::os::windows::fs::symlink_dir(original, entry_path)
+                .map_err(|err| BuildError::FailedToCreateSymLink(original.clone(), err))?;
+        }
+        #[cfg(windows)]
+        Kind::SymLink {
+            kind: SymLinkKind::File,
+            original,
+        } => {
+            std::os::windows::fs::symlink_file(original, entry_path)
                 .map_err(|err| BuildError::FailedToCreateSymLink(original.clone(), err))?;
         }
     }
@@ -567,6 +583,10 @@ enum Kind {
 enum SymLinkKind {
     #[cfg(unix)]
     Unix,
+    #[cfg(windows)]
+    File,
+    #[cfg(windows)]
+    Dir,
 }
 
 /// Represents an entry, file or directory, to be created.
@@ -610,6 +630,76 @@ pub mod unix {
     impl TempDirectoryBuilderExt for EntryBuilder {
         fn add_symlink(self, original: impl AsRef<Path>, link: impl AsRef<Path>) -> EntryBuilder {
             self.builder.add_symlink(original, link)
+        }
+    }
+}
+
+#[cfg(windows)]
+pub mod windows {
+    use std::path::Path;
+
+    use crate::{EntryBuilder, Kind, TempDirectoryBuilder};
+
+    pub trait TempDirectoryBuilderExt {
+        #[must_use]
+        fn add_symlink_dir(
+            self,
+            original: impl AsRef<Path>,
+            link: impl AsRef<Path>,
+        ) -> EntryBuilder;
+        #[must_use]
+        fn add_symlink_file(
+            self,
+            original: impl AsRef<Path>,
+            link: impl AsRef<Path>,
+        ) -> EntryBuilder;
+    }
+
+    impl TempDirectoryBuilderExt for TempDirectoryBuilder {
+        fn add_symlink_dir(
+            self,
+            original: impl AsRef<Path>,
+            link: impl AsRef<Path>,
+        ) -> EntryBuilder {
+            self.add(
+                link,
+                Kind::SymLink {
+                    kind: crate::SymLinkKind::Dir,
+                    original: original.as_ref().to_path_buf(),
+                },
+            )
+        }
+
+        fn add_symlink_file(
+            self,
+            original: impl AsRef<Path>,
+            link: impl AsRef<Path>,
+        ) -> EntryBuilder {
+            self.add(
+                link,
+                Kind::SymLink {
+                    kind: crate::SymLinkKind::File,
+                    original: original.as_ref().to_path_buf(),
+                },
+            )
+        }
+    }
+
+    impl TempDirectoryBuilderExt for EntryBuilder {
+        fn add_symlink_dir(
+            self,
+            original: impl AsRef<Path>,
+            link: impl AsRef<Path>,
+        ) -> EntryBuilder {
+            self.builder.add_symlink_dir(original, link)
+        }
+
+        fn add_symlink_file(
+            self,
+            original: impl AsRef<Path>,
+            link: impl AsRef<Path>,
+        ) -> EntryBuilder {
+            self.builder.add_symlink_file(original, link)
         }
     }
 }
@@ -729,6 +819,49 @@ mod tests {
         let source_content = std::fs::read_to_string(source_file_path).unwrap();
 
         assert_eq!(entry_content, source_content);
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn test_add_windows_file_symlink() {
+        use crate::windows::TempDirectoryBuilderExt;
+
+        let entry_name = "test.rs";
+        let source_file_path = Path::new(file!()).canonicalize().unwrap();
+        let temp_dir = TempDirectoryBuilder::default()
+            .add_symlink_file(&source_file_path, entry_name)
+            .build()
+            .unwrap();
+        let entry_path = temp_dir.path().join(entry_name);
+
+        let entry_path_exists = entry_path.try_exists();
+        assert!(entry_path_exists.is_ok(), "Error {entry_path_exists:?}");
+        assert!(entry_path.is_symlink());
+        assert!(entry_path.is_file());
+
+        let entry_content = std::fs::read_to_string(entry_path).unwrap();
+        let source_content = std::fs::read_to_string(source_file_path).unwrap();
+
+        assert_eq!(entry_content, source_content);
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn test_add_windows_dir_symlink() {
+        use crate::windows::TempDirectoryBuilderExt;
+
+        let entry_name = "test.rs";
+        let source_file_path = Path::new(file!()).canonicalize().unwrap();
+        let source_file_path = source_file_path.parent().unwrap();
+        let temp_dir = TempDirectoryBuilder::default()
+            .add_symlink_dir(&source_file_path, entry_name)
+            .build()
+            .unwrap();
+        let entry_path = temp_dir.path().join(entry_name);
+
+        assert!(entry_path.exists());
+        assert!(entry_path.is_symlink());
+        assert!(entry_path.is_dir());
     }
 
     #[test]
